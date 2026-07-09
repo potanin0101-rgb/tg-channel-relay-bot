@@ -33,7 +33,7 @@
 ```bash
 cd /Users/ivanpotanin/Documents/New\ project/tg-channel-relay-bot
 cp .env.example .env.local
-node src/bot.mjs
+node index.js
 ```
 
 Или:
@@ -57,25 +57,28 @@ npm start
 
 Во все исходные и целевые каналы бот должен быть добавлен как администратор.
 
-### 3. Зарегистрируйте каналы
+### 3. Подключите каналы в личке с ботом
 
-В исходном канале опубликуйте:
-
-```text
-/register_source main
-```
-
-В целевом канале:
+Для публичного source-канала:
 
 ```text
-/register_target promo-1
+/source_add @mainchannel main
 ```
 
-Во втором целевом:
+Для публичных target-каналов:
 
 ```text
-/register_target promo-2
+/target_add @promo1channel promo-1
+/target_add @promo2channel promo-2
 ```
+
+Для приватного канала:
+
+```text
+/target_add promo-1
+```
+
+После этого просто перешлите в личку боту любой пост из нужного канала.
 
 ### 4. Создайте маршруты
 
@@ -107,7 +110,7 @@ npm start
 Если есть отдельный канал только под BMW:
 
 ```text
-/register_target bmw-only
+/target_add @bmwonlychannel bmw-only
 /route_add main bmw-only
 /route_include main bmw-only bmw,x5,x6,m3,m5
 ```
@@ -149,6 +152,9 @@ npm start
 /menu
 /help
 /status
+/source_add @channel_username alias
+/target_add @channel_username alias
+/target_add alias
 /route_add source_alias target_alias
 /route_remove source_alias target_alias
 /route_replace source_alias target_alias старый текст => новый текст
