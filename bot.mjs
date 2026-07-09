@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ConfigStore } from "./config-store.mjs";
+import { ConfigStore, normalizeAlias } from "./config-store.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname);
@@ -151,9 +151,12 @@ function buildMainMenuText() {
     `Target-каналов: ${store.listTargets().length}`,
     `Маршрутов: ${store.listRoutes().length}`,
     "",
-    "Регистрация каналов:",
-    "`/register_source alias` в исходном канале",
-    "`/register_target alias` в целевом канале",
+    "MVP-настройка только в личке:",
+    "`/source_add @channel_username main`",
+    "`/target_add @channel_username promo-1`",
+    "",
+    "Для приватного канала:",
+    "`/source_add main` и затем перешлите любой пост из канала",
   ].join("\n");
 }
 
@@ -191,10 +194,12 @@ function buildStatusText() {
 
 function buildChannelsText() {
   const sourceLines = store.listSources().map(
-    (channel) => `• ${channel.alias} — ${channel.title} (${channel.chatId})`
+    (channel) =>
+      `• ${channel.alias} — ${channel.title}${channel.username ? ` (@${channel.username})` : ""} (${channel.chatId})`
   );
   const targetLines = store.listTargets().map(
-    (channel) => `• ${channel.alias} — ${channel.title} (${channel.chatId})`
+    (channel) =>
+      `• ${channel.alias} — ${channel.title}${channel.username ? ` (@${channel.username})` : ""} (${channel.chatId})`
   );
 
   return [
@@ -295,14 +300,18 @@ function buildHelpText() {
     "Как настроить",
     "",
     "1. Добавьте бота администратором в source и target каналы.",
-    "2. В source-канале опубликуйте: `/register_source main`",
-    "3. В каждом target-канале опубликуйте: `/register_target promo-1`",
-    "4. В личке боту: `/route_add main promo-1`",
-    "5. Для замены номера: `/route_replace main promo-1 +79990000000 => +78880000000`",
-    "6. Для BMW-only канала: `/route_include main bmw-only bmw,x5,m5`",
+    "2. Для публичного source: `/source_add @mainchannel main`",
+    "3. Для публичного target: `/target_add @promochannel promo-1`",
+    "4. Для приватного канала: `/target_add promo-1`, затем перешлите любой пост из этого канала в личку боту.",
+    "5. В личке боту: `/route_add main promo-1`",
+    "6. Для замены номера: `/route_replace main promo-1 +79990000000 => +78880000000`",
+    "7. Для BMW-only канала: `/route_include main bmw-only bmw,x5,m5`",
     "",
     "Команды в личке:",
     "• `/menu`",
+    "• `/source_add @channel alias`",
+    "• `/target_add @channel alias`",
+    "• `/target_add alias` + пересланный пост из приватного канала",
     "• `/route_add source target`",
     "• `/route_remove source target`",
     "• `/route_replace source target старый => новый`",
@@ -321,6 +330,86 @@ function buildHelpText() {
     "",
     "Если после замены длина текста меняется, Telegram-форматирование у этого сообщения может не сохраниться.",
   ].join("\n");
+}
+
+function parseChannelSetupArgs(rest) {
+  const parts = String(rest || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (!parts.length) {
+    throw new Error("Формат: /source_add @channel или /source_add alias");
+  }
+
+  const [first, second] = parts;
+  if (first.startsWith("@")) {
+    return {
+      chatRef: first,
+      alias: second || first.slice(1),
+    };
+  }
+
+  return {
+    chatRef: "",
+    alias: first,
+  };
+}
+
+function extractForwardedChannel(message) {
+  const candidates = [message?.reply_to_message, message].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (candidate.forward_from_chat?.id && candidate.forward_from_chat.type === "channel") {
+      return candidate.forward_from_chat;
+    }
+
+    if (candidate.forward_origin?.type === "channel" && candidate.forward_origin.chat?.id) {
+      return candidate.forward_origin.chat;
+    }
+  }
+
+  return null;
+}
+
+async function resolveChannelByRef(chatRef) {
+  const channel = await telegramApi("getChat", {
+    chat_id: chatRef,
+  });
+
+  if (channel.type !== "channel") {
+    throw new Error("Нужен именно Telegram-канал, а не группа или личный чат.");
+  }
+
+  return channel;
+}
+
+async function registerChannelFromPrivateMessage(message, role, aliasInput, chatRef = "") {
+  const alias = normalizeAlias(aliasInput);
+  let chat = null;
+
+  if (chatRef) {
+    chat = await resolveChannelByRef(chatRef);
+  } else {
+    chat = extractForwardedChannel(message);
+  }
+
+  if (!chat?.id) {
+    throw new Error(
+      "Не вижу канал. Укажите `@username` канала или перешлите любой пост из него в личку боту."
+    );
+  }
+
+  const channel = store.registerChannel(chat, role, alias);
+  await sendTextMessage(
+    message.chat.id,
+    [
+      `Канал подключен как ${role}: ${channel.alias}`,
+      `${channel.title}${channel.username ? ` (@${channel.username})` : ""}`,
+      `ID: ${channel.chatId}`,
+    ].join("\n")
+  );
+  return channel;
 }
 
 async function telegramApi(method, payload) {
@@ -500,6 +589,17 @@ async function handlePrivateSession(message) {
   const session = sessions.get(message.from.id);
   if (!session) return false;
 
+  if (session.kind === "await_channel_registration") {
+    let chatRef = "";
+    if (message.text?.trim().startsWith("@")) {
+      ({ chatRef } = parseChannelSetupArgs(message.text));
+    }
+
+    await registerChannelFromPrivateMessage(message, session.role, session.alias, chatRef);
+    sessions.delete(message.from.id);
+    return true;
+  }
+
   if (session.kind === "await_route_create") {
     const { sourceAlias, targetAlias } = parseRouteAliases(message.text || "");
     const route = store.createRoute(sourceAlias, targetAlias);
@@ -560,6 +660,14 @@ async function handlePrivateCommand(message) {
     return;
   }
 
+  if (!message.text) {
+    await sendTextMessage(
+      message.chat.id,
+      "Жду текстовую команду. Для подключения приватного канала сначала отправьте /source_add alias или /target_add alias."
+    );
+    return;
+  }
+
   const { command, rest } = parsePrivateCommand(message.text || "");
 
   if (command === "/start" || command === "/menu") {
@@ -572,6 +680,38 @@ async function handlePrivateCommand(message) {
       parse_mode: "Markdown",
       reply_markup: buildMainMenuMarkup(),
     });
+    return;
+  }
+
+  if (command === "/source_add" || command === "/target_add") {
+    const role = command === "/source_add" ? "source" : "target";
+    const { chatRef, alias } = parseChannelSetupArgs(rest);
+
+    if (chatRef) {
+      await registerChannelFromPrivateMessage(message, role, alias, chatRef);
+      return;
+    }
+
+    const forwardedChannel = extractForwardedChannel(message);
+    if (forwardedChannel) {
+      await registerChannelFromPrivateMessage(message, role, alias);
+      return;
+    }
+
+    sessions.set(message.from.id, {
+      kind: "await_channel_registration",
+      role,
+      alias,
+    });
+    await sendTextMessage(
+      message.chat.id,
+      [
+        `Ок, подключаем ${role}-канал с алиасом \`${normalizeAlias(alias)}\`.`,
+        "Теперь перешлите в этот чат любой пост из нужного канала.",
+        "Если канал публичный, можно вместо пересылки просто прислать его `@username` следующим сообщением.",
+      ].join("\n"),
+      { parse_mode: "Markdown" }
+    );
     return;
   }
 
@@ -1045,12 +1185,13 @@ async function handleCallbackQuery(callbackQuery) {
 
 async function handleMessageUpdate(message) {
   try {
-    if (await handleChannelRegistration(message)) {
+    if (isPrivateChat(message.chat)) {
+      await handlePrivateCommand(message);
       return;
     }
 
-    if (isPrivateChat(message.chat) && message.text) {
-      await handlePrivateCommand(message);
+    if (await handleChannelRegistration(message)) {
+      return;
     }
   } catch (error) {
     console.error("Message handling error:", error.message);
