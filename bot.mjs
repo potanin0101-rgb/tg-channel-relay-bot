@@ -38,6 +38,7 @@ const mediaGroupFlushMs = Number(process.env.MEDIA_GROUP_FLUSH_MS || 1500);
 const minRelayDelayMs = Number(process.env.MIN_RELAY_DELAY_MS || 300);
 const maxRelayDelayMs = Number(process.env.MAX_RELAY_DELAY_MS || 500);
 const sourceHistoryLimit = Number(process.env.SOURCE_HISTORY_LIMIT || 100);
+const defaultTailMarker = String(process.env.DEFAULT_TAIL_MARKER || "по всем вопросам").trim();
 const adminUserIds = String(process.env.ADMIN_USER_IDS || "")
   .split(",")
   .map((value) => value.trim())
@@ -81,14 +82,21 @@ function isPrivateChat(chat) {
   return chat?.type === "private";
 }
 
-function routeLabel(route) {
-  const source = store.findChannelById(route.sourceChatId);
-  const target = store.findChannelById(route.targetChatId);
-  return `${source?.alias || route.sourceChatId} -> ${target?.alias || route.targetChatId}`;
+function setUserSession(userId, session) {
+  sessions.set(Number(userId), session);
 }
 
-function hasRewrite(route) {
-  return Boolean(route.findText || route.tailFindText);
+function getUserSession(userId) {
+  return sessions.get(Number(userId)) || null;
+}
+
+function clearUserSession(userId) {
+  sessions.delete(Number(userId));
+}
+
+function formatChannelLabel(channel) {
+  if (!channel) return "не найден";
+  return `${channel.title}${channel.username ? ` (@${channel.username})` : ""}`;
 }
 
 function summarizeText(value, maxLength = 48) {
@@ -109,6 +117,20 @@ function normalizeKeywords(rawInput) {
       .map((item) => item.trim().toLowerCase())
       .filter(Boolean)
   )];
+}
+
+function routeLabel(route) {
+  const source = store.findChannelById(route.sourceChatId);
+  const target = store.findChannelById(route.targetChatId);
+  return `${source?.alias || route.sourceChatId} -> ${target?.alias || route.targetChatId}`;
+}
+
+function routeBadge(route) {
+  return route.active ? "ON" : "OFF";
+}
+
+function hasRewrite(route) {
+  return Boolean(route.findText || route.tailFindText);
 }
 
 function buildFilterSummary(route) {
@@ -170,128 +192,6 @@ function routeMatchesText(searchText, route) {
   return true;
 }
 
-function buildMenuText() {
-  return [
-    "Управление ретранслятором",
-    "",
-    `Source-каналов: ${store.listSources().length}`,
-    `Target-каналов: ${store.listTargets().length}`,
-    `Маршрутов: ${store.listRoutes().length}`,
-    `Задержка отправки: ${Math.min(minRelayDelayMs, maxRelayDelayMs)}-${Math.max(minRelayDelayMs, maxRelayDelayMs)} мс`,
-    "",
-    "Быстрый старт в личке с ботом:",
-    "`/source_add @artlinemotors main`",
-    "`/target_add @wewdwe1 promo-1`",
-    "`/route_add main promo-1`",
-    "",
-    "Для приватного канала:",
-    "`/source_add main` и затем перешлите боту любой пост из канала.",
-  ].join("\n");
-}
-
-function buildMenuMarkup() {
-  return {
-    inline_keyboard: [
-      [
-        { text: "Статус", callback_data: "menu:status" },
-        { text: "Каналы", callback_data: "menu:channels" },
-      ],
-      [
-        { text: "Маршруты", callback_data: "menu:routes" },
-        { text: "Помощь", callback_data: "menu:help" },
-      ],
-      [{ text: "Обновить", callback_data: "menu:main" }],
-    ],
-  };
-}
-
-function buildStatusText() {
-  const activeRoutes = store.listRoutes().filter((route) => route.active);
-  return [
-    "Статус",
-    "",
-    `Активных маршрутов: ${activeRoutes.length}`,
-    `Последний update_id: ${store.getLastUpdateId()}`,
-    `Буферов альбомов: ${mediaGroups.size}`,
-    `История на source: до ${sourceHistoryLimit} постов`,
-    "",
-    activeRoutes.length
-      ? activeRoutes.map((route) => `• ${routeLabel(route)}`).join("\n")
-      : "Активных маршрутов пока нет.",
-  ].join("\n");
-}
-
-function buildChannelsText() {
-  const sourceLines = store.listSources().map(
-    (channel) =>
-      `• ${channel.alias} — ${channel.title}${channel.username ? ` (@${channel.username})` : ""}`
-  );
-  const targetLines = store.listTargets().map(
-    (channel) =>
-      `• ${channel.alias} — ${channel.title}${channel.username ? ` (@${channel.username})` : ""}`
-  );
-
-  return [
-    "Каналы",
-    "",
-    "Source:",
-    sourceLines.length ? sourceLines.join("\n") : "Пока пусто.",
-    "",
-    "Target:",
-    targetLines.length ? targetLines.join("\n") : "Пока пусто.",
-  ].join("\n");
-}
-
-function buildRoutesText() {
-  const routes = store.listRoutes();
-  return [
-    "Маршруты",
-    "",
-    routes.length
-      ? routes.map((route) => buildRouteDetailsText(route)).join("\n\n")
-      : "Маршрутов пока нет.",
-  ].join("\n");
-}
-
-function buildHelpText() {
-  return [
-    "Команды в личке с ботом",
-    "",
-    "`/menu`",
-    "`/status`",
-    "`/channels`",
-    "`/routes`",
-    "`/source_add @channel alias`",
-    "`/target_add @channel alias`",
-    "`/source_add alias` + переслать пост из приватного канала",
-    "`/target_add alias` + переслать пост из приватного канала",
-    "`/route_add source target`",
-    "`/route_remove source target`",
-    "`/route_replace source target старый => новый`",
-    "`/route_tail source target маркер => новый_контактный_блок`",
-    "`/route_clear source target`",
-    "`/route_include source target bmw,x5,m5`",
-    "`/route_exclude source target audi,mercedes`",
-    "`/route_filters_clear source target`",
-    "`/replay_last source 10`",
-    "",
-    "Повторная выгрузка работает по постам, которые бот уже успел сохранить после запуска.",
-  ].join("\n");
-}
-
-function buildRouteDetailsText(route) {
-  const source = store.findChannelById(route.sourceChatId);
-  const target = store.findChannelById(route.targetChatId);
-  return [
-    `${route.active ? "ON" : "OFF"} ${routeLabel(route)}`,
-    `Source: ${source?.title || route.sourceChatId}`,
-    `Target: ${target?.title || route.targetChatId}`,
-    `Замена: ${route.findText ? `"${summarizeText(route.findText)}" -> "${summarizeText(route.replaceText)}"` : "нет"}`,
-    `Хвост: ${route.tailFindText ? `"${summarizeText(route.tailFindText)}" -> "${summarizeText(route.tailReplaceText)}"` : "нет"}`,
-    buildFilterSummary(route),
-  ].join("\n");
-}
-
 function parseCommand(messageText) {
   const text = String(messageText || "").trim();
   const match = text.match(/^\/([a-z0-9_]+)(?:@\S+)?(?:\s+([\s\S]*))?$/i);
@@ -311,7 +211,7 @@ function parseChannelSetupArgs(rest) {
     .filter(Boolean);
 
   if (!parts.length) {
-    throw new Error("Формат: /source_add @channel alias или /source_add alias");
+    throw new Error("Формат: @channel alias или alias");
   }
 
   const [first, second] = parts;
@@ -346,7 +246,7 @@ function parseReplaceRule(rawInput) {
   const findText = rawInput.slice(0, separatorIndex).trim();
   const replaceText = rawInput.slice(separatorIndex + separator.length).trim();
   if (!findText) {
-    throw new Error("Слева от => должен быть текст или маркер для поиска.");
+    throw new Error("Слева от => должен быть текст для поиска.");
   }
 
   return { findText, replaceText };
@@ -373,26 +273,6 @@ async function resolveChannelByRef(chatRef) {
   if (channel.type !== "channel") {
     throw new Error("Нужен именно Telegram-канал, а не группа или личный чат.");
   }
-  return channel;
-}
-
-async function registerChannelFromPrivateMessage(message, role, aliasInput, chatRef = "") {
-  const alias = normalizeAlias(aliasInput);
-  const chat = chatRef ? await resolveChannelByRef(chatRef) : extractForwardedChannel(message);
-
-  if (!chat?.id) {
-    throw new Error("Не вижу канал. Укажите @username или перешлите любой пост из него в личку боту.");
-  }
-
-  const channel = store.registerChannel(chat, role, alias);
-  await sendTextMessage(
-    message.chat.id,
-    [
-      `Канал подключен как ${role}: ${channel.alias}`,
-      `${channel.title}${channel.username ? ` (@${channel.username})` : ""}`,
-      `ID: ${channel.chatId}`,
-    ].join("\n")
-  );
   return channel;
 }
 
@@ -445,35 +325,449 @@ function ensurePrivateAdmin(message) {
   if (!isPrivateChat(message.chat)) {
     throw new Error("Эта команда работает только в личке с ботом.");
   }
+
   if (!store.hasAdmins()) {
     store.addAdmin(message.from.id);
   }
+
   if (!store.isAdmin(message.from.id)) {
     throw new Error("У вас нет доступа к управлению этим ботом.");
   }
 }
 
-async function showMenu(chatId) {
-  await sendTextMessage(chatId, buildMenuText(), {
-    reply_markup: buildMenuMarkup(),
-    parse_mode: "Markdown",
+function buildMainMenuText() {
+  return [
+    "Управление ретранслятором",
+    "",
+    `Source-каналов: ${store.listSources().length}`,
+    `Промо-каналов: ${store.listTargets().length}`,
+    `Маршрутов: ${store.listRoutes().length}`,
+    `Задержка отправки: ${Math.min(minRelayDelayMs, maxRelayDelayMs)}-${Math.max(minRelayDelayMs, maxRelayDelayMs)} мс`,
+    "",
+    "Основная логика теперь кнопочная:",
+    "1. Открываете раздел Промо-каналы",
+    "2. Выбираете нужный канал",
+    "3. Настраиваете только его маршрут, фильтры и выгрузку истории",
+  ].join("\n");
+}
+
+function buildMainMenuMarkup() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "Статус", callback_data: "menu:status" },
+        { text: "Промо-каналы", callback_data: "menu:targets" },
+      ],
+      [
+        { text: "Source-каналы", callback_data: "menu:sources" },
+        { text: "Подключить", callback_data: "menu:setup" },
+      ],
+      [{ text: "Помощь", callback_data: "menu:help" }],
+    ],
+  };
+}
+
+function buildStatusText() {
+  const activeRoutes = store.listRoutes().filter((route) => route.active);
+  return [
+    "Статус",
+    "",
+    `Активных маршрутов: ${activeRoutes.length}`,
+    `Последний update_id: ${store.getLastUpdateId()}`,
+    `Буферов альбомов: ${mediaGroups.size}`,
+    `История на source: до ${sourceHistoryLimit} постов`,
+    "",
+    activeRoutes.length
+      ? activeRoutes.map((route) => `• ${routeBadge(route)} ${routeLabel(route)}`).join("\n")
+      : "Активных маршрутов пока нет.",
+  ].join("\n");
+}
+
+function buildSourcesText() {
+  const sources = store.listSources();
+  return [
+    "Source-каналы",
+    "",
+    sources.length
+      ? sources.map((channel) => `• ${channel.alias} — ${formatChannelLabel(channel)}`).join("\n")
+      : "Source-каналы пока не подключены.",
+    "",
+    "Новый source можно добавить кнопкой ниже.",
+  ].join("\n");
+}
+
+function buildSourcesMarkup() {
+  return {
+    inline_keyboard: [
+      [{ text: "Добавить source", callback_data: "setup:source" }],
+      [{ text: "Назад", callback_data: "menu:main" }],
+    ],
+  };
+}
+
+function buildTargetsListText() {
+  const targets = store.listTargets();
+  return [
+    "Промо-каналы",
+    "",
+    targets.length
+      ? targets
+          .map((target) => {
+            const routes = store.listRoutesForTarget(target.chatId);
+            const activeCount = routes.filter((route) => route.active).length;
+            return `• ${target.alias} — ${formatChannelLabel(target)} | маршрутов: ${routes.length} | активных: ${activeCount}`;
+          })
+          .join("\n")
+      : "Промо-каналы пока не подключены.",
+    "",
+    "Откройте нужный канал кнопкой ниже. Все дальнейшие действия будут идти в его контексте.",
+  ].join("\n");
+}
+
+function buildTargetsListMarkup() {
+  const targetButtons = store.listTargets().slice(0, 40).map((target) => {
+    const routes = store.listRoutesForTarget(target.chatId);
+    return [
+      {
+        text: `${target.alias} (${routes.length})`,
+        callback_data: `target:view:${target.chatId}`,
+      },
+    ];
+  });
+
+  return {
+    inline_keyboard: [
+      ...targetButtons,
+      [{ text: "Добавить промо-канал", callback_data: "setup:target" }],
+      [{ text: "Назад", callback_data: "menu:main" }],
+    ],
+  };
+}
+
+function buildTargetDetailsText(target) {
+  const routes = store.listRoutesForTarget(target.chatId);
+  const routeLines = routes.length
+    ? routes
+        .map((route) => {
+          const source = store.findChannelById(route.sourceChatId);
+          return `• ${routeBadge(route)} ${source?.alias || route.sourceChatId}`;
+        })
+        .join("\n")
+    : "Пока нет ни одного привязанного source.";
+
+  return [
+    "Промо-канал",
+    "",
+    `Название: ${formatChannelLabel(target)}`,
+    `Алиас: ${target.alias}`,
+    `ID: ${target.chatId}`,
+    `Маршрутов: ${routes.length}`,
+    "",
+    routeLines,
+    "",
+    "Откройте маршрут кнопкой ниже или добавьте новый source в этот канал.",
+  ].join("\n");
+}
+
+function buildTargetDetailsMarkup(target) {
+  const routeButtons = store.listRoutesForTarget(target.chatId).slice(0, 20).map((route) => {
+    const source = store.findChannelById(route.sourceChatId);
+    return [
+      {
+        text: `${route.active ? "✅" : "⏸"} ${source?.alias || route.sourceChatId}`,
+        callback_data: `route:view:${route.id}`,
+      },
+    ];
+  });
+
+  return {
+    inline_keyboard: [
+      ...routeButtons,
+      [{ text: "Добавить source в этот канал", callback_data: `target:attach:${target.chatId}` }],
+      [{ text: "Назад к промо-каналам", callback_data: "menu:targets" }],
+    ],
+  };
+}
+
+function buildSourcePickerText(target) {
+  const sources = store.listSources();
+  return [
+    `Подключение source к ${target.alias}`,
+    "",
+    sources.length
+      ? "Выберите source, который должен копироваться в этот промо-канал."
+      : "Сначала добавьте хотя бы один source-канал.",
+  ].join("\n");
+}
+
+function buildSourcePickerMarkup(target) {
+  const sourceButtons = store.listSources().slice(0, 20).map((source) => [
+    {
+      text: source.alias,
+      callback_data: `target:picksource:${target.chatId}:${source.chatId}`,
+    },
+  ]);
+
+  return {
+    inline_keyboard: [
+      ...sourceButtons,
+      [{ text: "Назад к каналу", callback_data: `target:view:${target.chatId}` }],
+    ],
+  };
+}
+
+function buildRouteDetailsText(route) {
+  const source = store.findChannelById(route.sourceChatId);
+  const target = store.findChannelById(route.targetChatId);
+
+  return [
+    "Маршрут",
+    "",
+    `Состояние: ${route.active ? "включен" : "выключен"}`,
+    `Source: ${formatChannelLabel(source)}`,
+    `Target: ${formatChannelLabel(target)}`,
+    `Обычная замена: ${route.findText ? `"${summarizeText(route.findText)}" -> "${summarizeText(route.replaceText)}"` : "не задана"}`,
+    `Контактный блок: ${route.tailFindText ? `от "${summarizeText(route.tailFindText, 32)}"` : "не задан"}`,
+    buildFilterSummary(route),
+    "",
+    "История из этого экрана будет выгружаться только в текущий промо-канал, а не во всю сетку.",
+  ].join("\n");
+}
+
+function buildRouteDetailsMarkup(route) {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: route.active ? "Выключить" : "Включить",
+          callback_data: `route:toggle:${route.id}`,
+        },
+        { text: "История", callback_data: `route:replaymenu:${route.id}` },
+      ],
+      [
+        { text: "Контактный блок", callback_data: `route:tail:${route.id}` },
+        { text: "Замена текста", callback_data: `route:replace:${route.id}` },
+      ],
+      [
+        { text: "Include", callback_data: `route:include:${route.id}` },
+        { text: "Exclude", callback_data: `route:exclude:${route.id}` },
+      ],
+      [
+        { text: "Очистить фильтры", callback_data: `route:clearfilters:${route.id}` },
+        { text: "Очистить замену", callback_data: `route:clearrewrite:${route.id}` },
+      ],
+      [{ text: "Удалить маршрут", callback_data: `route:remove:${route.id}` }],
+      [{ text: "Назад к промо-каналу", callback_data: `target:view:${route.targetChatId}` }],
+    ],
+  };
+}
+
+function buildReplayMenuText(route) {
+  const source = store.findChannelById(route.sourceChatId);
+  const target = store.findChannelById(route.targetChatId);
+  const cached = store.getRecentSourcePosts(route.sourceChatId, sourceHistoryLimit).length;
+
+  return [
+    "Повторная выгрузка",
+    "",
+    `Source: ${formatChannelLabel(source)}`,
+    `Target: ${formatChannelLabel(target)}`,
+    `Сейчас в кэше source: ${cached} постов`,
+    "",
+    "Выберите, сколько последних постов прогнать именно в этот промо-канал.",
+  ].join("\n");
+}
+
+function buildReplayMenuMarkup(route) {
+  const counts = [10, 20, 50]
+    .filter((count) => count <= sourceHistoryLimit)
+    .map((count) => ({
+      text: `${count} постов`,
+      callback_data: `route:replay:${route.id}:${count}`,
+    }));
+  const replayRow = counts.length
+    ? counts
+    : [
+        {
+          text: `${Math.max(1, sourceHistoryLimit)} постов`,
+          callback_data: `route:replay:${route.id}:${Math.max(1, sourceHistoryLimit)}`,
+        },
+      ];
+
+  return {
+    inline_keyboard: [
+      replayRow,
+      [{ text: "Назад к маршруту", callback_data: `route:view:${route.id}` }],
+    ],
+  };
+}
+
+function buildSetupText() {
+  return [
+    "Подключение каналов",
+    "",
+    "1. Добавьте бота администратором в нужный канал.",
+    "2. Нажмите нужную кнопку ниже.",
+    "3. Для публичного канала отправьте в чат: @username alias",
+    "4. Для приватного канала можно сначала отправить alias, затем переслать любой пост из канала.",
+  ].join("\n");
+}
+
+function buildSetupMarkup() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "Добавить source", callback_data: "setup:source" },
+        { text: "Добавить promo", callback_data: "setup:target" },
+      ],
+      [{ text: "Назад", callback_data: "menu:main" }],
+    ],
+  };
+}
+
+function buildHelpText() {
+  return [
+    "Как теперь работать",
+    "",
+    "1. Добавьте source и promo-каналы через меню Подключить.",
+    "2. Откройте раздел Промо-каналы.",
+    "3. Выберите нужный promo-канал кнопкой.",
+    "4. Внутри него подключите source, настройте контактный блок, фильтры и историю.",
+    "",
+    "Кнопки внутри маршрута:",
+    "• История — выгружает последние 10 / 20 / 50 постов только в этот promo-канал",
+    "• Контактный блок — просит прислать новый хвост поста",
+    "• Замена текста — просит прислать правило вида старый => новый",
+    "• Include / Exclude — просит прислать ключи через запятую",
+    "",
+    "Старые команды тоже работают, но основной сценарий теперь кнопочный.",
+  ].join("\n");
+}
+
+async function showMainMenu(chatId) {
+  await sendTextMessage(chatId, buildMainMenuText(), {
+    reply_markup: buildMainMenuMarkup(),
   });
 }
 
-async function renderMenuFromCallback(callbackQuery, screen) {
+async function showSourcesScreen(chatId) {
+  await sendTextMessage(chatId, buildSourcesText(), {
+    reply_markup: buildSourcesMarkup(),
+  });
+}
+
+async function showTargetsScreen(chatId) {
+  await sendTextMessage(chatId, buildTargetsListText(), {
+    reply_markup: buildTargetsListMarkup(),
+  });
+}
+
+async function showTargetDetails(chatId, targetChatId) {
+  const target = store.findChannelById(targetChatId);
+  if (!target) {
+    throw new Error("Промо-канал не найден.");
+  }
+
+  await sendTextMessage(chatId, buildTargetDetailsText(target), {
+    reply_markup: buildTargetDetailsMarkup(target),
+  });
+}
+
+async function showRouteDetails(chatId, routeId) {
+  const route = store.getRouteById(routeId);
+  if (!route) {
+    throw new Error("Маршрут не найден.");
+  }
+
+  await sendTextMessage(chatId, buildRouteDetailsText(route), {
+    reply_markup: buildRouteDetailsMarkup(route),
+  });
+}
+
+async function renderCallbackScreen(callbackQuery, screen, payload = {}) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
 
-  const screens = {
-    main: { text: buildMenuText(), options: { reply_markup: buildMenuMarkup(), parse_mode: "Markdown" } },
-    status: { text: buildStatusText(), options: { reply_markup: buildMenuMarkup() } },
-    channels: { text: buildChannelsText(), options: { reply_markup: buildMenuMarkup() } },
-    routes: { text: buildRoutesText(), options: { reply_markup: buildMenuMarkup() } },
-    help: { text: buildHelpText(), options: { reply_markup: buildMenuMarkup(), parse_mode: "Markdown" } },
-  };
+  if (screen === "main") {
+    await editTextMessage(chatId, messageId, buildMainMenuText(), {
+      reply_markup: buildMainMenuMarkup(),
+    });
+    return;
+  }
 
-  const next = screens[screen] || screens.main;
-  await editTextMessage(chatId, messageId, next.text, next.options);
+  if (screen === "status") {
+    await editTextMessage(chatId, messageId, buildStatusText(), {
+      reply_markup: {
+        inline_keyboard: [[{ text: "Назад", callback_data: "menu:main" }]],
+      },
+    });
+    return;
+  }
+
+  if (screen === "sources") {
+    await editTextMessage(chatId, messageId, buildSourcesText(), {
+      reply_markup: buildSourcesMarkup(),
+    });
+    return;
+  }
+
+  if (screen === "targets") {
+    await editTextMessage(chatId, messageId, buildTargetsListText(), {
+      reply_markup: buildTargetsListMarkup(),
+    });
+    return;
+  }
+
+  if (screen === "setup") {
+    await editTextMessage(chatId, messageId, buildSetupText(), {
+      reply_markup: buildSetupMarkup(),
+    });
+    return;
+  }
+
+  if (screen === "help") {
+    await editTextMessage(chatId, messageId, buildHelpText(), {
+      reply_markup: {
+        inline_keyboard: [[{ text: "Назад", callback_data: "menu:main" }]],
+      },
+    });
+    return;
+  }
+
+  if (screen === "target") {
+    const target = store.findChannelById(payload.targetChatId);
+    if (!target) throw new Error("Промо-канал не найден.");
+    await editTextMessage(chatId, messageId, buildTargetDetailsText(target), {
+      reply_markup: buildTargetDetailsMarkup(target),
+    });
+    return;
+  }
+
+  if (screen === "attach-source") {
+    const target = store.findChannelById(payload.targetChatId);
+    if (!target) throw new Error("Промо-канал не найден.");
+    await editTextMessage(chatId, messageId, buildSourcePickerText(target), {
+      reply_markup: buildSourcePickerMarkup(target),
+    });
+    return;
+  }
+
+  if (screen === "route") {
+    const route = store.getRouteById(payload.routeId);
+    if (!route) throw new Error("Маршрут не найден.");
+    await editTextMessage(chatId, messageId, buildRouteDetailsText(route), {
+      reply_markup: buildRouteDetailsMarkup(route),
+    });
+    return;
+  }
+
+  if (screen === "replay") {
+    const route = store.getRouteById(payload.routeId);
+    if (!route) throw new Error("Маршрут не найден.");
+    await editTextMessage(chatId, messageId, buildReplayMenuText(route), {
+      reply_markup: buildReplayMenuMarkup(route),
+    });
+  }
 }
 
 async function notifyAdmins(text) {
@@ -484,6 +778,59 @@ async function notifyAdmins(text) {
       console.error("Failed to notify admin", adminId, error.message);
     }
   }
+}
+
+async function registerChannelFromPrivateMessage(message, role, aliasInput = "", chatRef = "") {
+  const forwardedChannel = extractForwardedChannel(message);
+  const chat = chatRef
+    ? await resolveChannelByRef(chatRef)
+    : forwardedChannel || (message.chat?.type === "channel" ? message.chat : null);
+
+  if (!chat?.id) {
+    throw new Error("Не вижу канал. Укажите @username или перешлите любой пост из него в личку боту.");
+  }
+
+  const channel = store.registerChannel(chat, role, aliasInput);
+  await sendTextMessage(
+    message.chat.id,
+    [
+      `Канал подключен как ${role}: ${channel.alias}`,
+      formatChannelLabel(channel),
+      `ID: ${channel.chatId}`,
+    ].join("\n")
+  );
+  return channel;
+}
+
+async function replayRoutePosts(adminChatId, routeId, count) {
+  const route = store.getRouteById(routeId);
+  if (!route) {
+    throw new Error("Маршрут не найден.");
+  }
+
+  const safeCount = Math.max(1, Math.min(sourceHistoryLimit, Number(count) || 1));
+  const entries = store.getRecentSourcePosts(route.sourceChatId, safeCount);
+  if (!entries.length) {
+    throw new Error("В истории этого source пока нет сохраненных постов.");
+  }
+
+  let relayedCount = 0;
+  for (const entry of entries) {
+    relayedCount += await relayStoredPost(entry.messages, [route], { saveHistory: false });
+  }
+
+  const source = store.findChannelById(route.sourceChatId);
+  const target = store.findChannelById(route.targetChatId);
+  await sendTextMessage(
+    adminChatId,
+    [
+      "Повторная выгрузка завершена.",
+      `Source: ${source?.alias || route.sourceChatId}`,
+      `Target: ${target?.alias || route.targetChatId}`,
+      `Постов взято из кэша: ${entries.length}`,
+      `Сработавших отправок: ${relayedCount}`,
+    ].join("\n")
+  );
 }
 
 async function replaySourcePosts(adminChatId, sourceAlias, count) {
@@ -514,36 +861,173 @@ async function replaySourcePosts(adminChatId, sourceAlias, count) {
   );
 }
 
-async function handlePendingSession(message) {
-  const session = sessions.get(message.from.id);
-  if (!session || session.kind !== "await_channel_registration") {
-    return false;
+function buildRouteFromAliases(sourceAlias, targetAlias) {
+  const source = store.findChannelByAlias(sourceAlias);
+  const target = store.findChannelByAlias(targetAlias);
+  if (!source || !target) {
+    throw new Error("Не найден source или target канал по алиасу.");
+  }
+  return { source, target, routeId: store.buildRouteId(source.chatId, target.chatId) };
+}
+
+async function completeChannelSetupFlow(message, role, aliasInput = "", chatRef = "") {
+  const channel = await registerChannelFromPrivateMessage(message, role, aliasInput, chatRef);
+  clearUserSession(message.from.id);
+
+  if (role === "target") {
+    await showTargetDetails(message.chat.id, channel.chatId);
+    return;
   }
 
-  const text = String(message.text || "").trim();
-  const chatRef = text.startsWith("@") ? text : "";
+  await showSourcesScreen(message.chat.id);
+}
+
+async function handleChannelSetupSession(message, session) {
   const forwardedChannel = extractForwardedChannel(message);
-  if (!chatRef && !forwardedChannel) {
+  const text = String(message.text || "").trim();
+
+  if (forwardedChannel && !text) {
+    await completeChannelSetupFlow(message, session.role, session.alias || "");
+    return true;
+  }
+
+  if (!text) {
     return false;
   }
 
-  await registerChannelFromPrivateMessage(message, session.role, session.alias, chatRef);
-  sessions.delete(message.from.id);
+  const { chatRef, alias } = parseChannelSetupArgs(text);
+  if (chatRef) {
+    await completeChannelSetupFlow(message, session.role, alias, chatRef);
+    return true;
+  }
+
+  if (forwardedChannel) {
+    await completeChannelSetupFlow(message, session.role, alias || session.alias || "");
+    return true;
+  }
+
+  setUserSession(message.from.id, {
+    kind: "await_channel_registration",
+    role: session.role,
+    alias: alias || session.alias || "",
+  });
+  await sendTextMessage(
+    message.chat.id,
+    [
+      `Алиас сохранен: ${normalizeAlias(alias || session.alias || "") || "будет сгенерирован автоматически"}`,
+      "Теперь перешлите сюда любой пост из приватного канала.",
+      "Либо вместо пересылки просто отправьте @username канала.",
+    ].join("\n")
+  );
   return true;
+}
+
+async function handlePendingSession(message) {
+  const session = getUserSession(message.from.id);
+  if (!session) return false;
+
+  if (session.kind === "await_channel_setup" || session.kind === "await_channel_registration") {
+    return handleChannelSetupSession(message, session);
+  }
+
+  if (session.kind === "await_route_replace") {
+    const rule = parseReplaceRule(String(message.text || ""));
+    const route = store.setRouteReplacement(session.routeId, rule.findText, rule.replaceText);
+    clearUserSession(message.from.id);
+    await sendTextMessage(message.chat.id, "Обычная замена обновлена.");
+    await showRouteDetails(message.chat.id, route.id);
+    return true;
+  }
+
+  if (session.kind === "await_route_tail") {
+    const replaceText = String(message.text || "").trim();
+    if (!replaceText) {
+      throw new Error("Пришлите новый контактный блок текстом.");
+    }
+    const route = store.setRouteTailReplacement(
+      session.routeId,
+      session.tailMarker || defaultTailMarker,
+      replaceText
+    );
+    clearUserSession(message.from.id);
+    await sendTextMessage(
+      message.chat.id,
+      `Контактный блок обновлен. Маркер поиска: "${session.tailMarker || defaultTailMarker}".`
+    );
+    await showRouteDetails(message.chat.id, route.id);
+    return true;
+  }
+
+  if (session.kind === "await_route_include") {
+    const route = store.setRouteFilters(session.routeId, {
+      includeKeywords: normalizeKeywords(message.text),
+      excludeKeywords: store.getRouteById(session.routeId)?.excludeKeywords || [],
+    });
+    clearUserSession(message.from.id);
+    await sendTextMessage(message.chat.id, "Include-фильтр обновлен.");
+    await showRouteDetails(message.chat.id, route.id);
+    return true;
+  }
+
+  if (session.kind === "await_route_exclude") {
+    const route = store.setRouteFilters(session.routeId, {
+      includeKeywords: store.getRouteById(session.routeId)?.includeKeywords || [],
+      excludeKeywords: normalizeKeywords(message.text),
+    });
+    clearUserSession(message.from.id);
+    await sendTextMessage(message.chat.id, "Exclude-фильтр обновлен.");
+    await showRouteDetails(message.chat.id, route.id);
+    return true;
+  }
+
+  return false;
+}
+
+async function startChannelSetup(chatId, userId, role) {
+  setUserSession(userId, {
+    kind: "await_channel_setup",
+    role,
+    alias: "",
+  });
+
+  await sendTextMessage(
+    chatId,
+    [
+      role === "source" ? "Подключаем source-канал." : "Подключаем промо-канал.",
+      "Для публичного канала отправьте: @username alias",
+      "Для приватного канала сначала можно отправить alias, потом переслать любой пост из канала.",
+    ].join("\n")
+  );
 }
 
 async function handlePrivateCommand(message) {
   ensurePrivateAdmin(message);
 
-  if (await handlePendingSession(message)) {
+  const { command, rest } = parseCommand(message.text);
+
+  if (command === "/cancel") {
+    clearUserSession(message.from.id);
+    await sendTextMessage(message.chat.id, "Текущее действие отменено.");
+    await showMainMenu(message.chat.id);
     return;
   }
 
-  const { command, rest } = parseCommand(message.text);
-  if (!command) return;
+  if (!command) {
+    if (await handlePendingSession(message)) {
+      return;
+    }
+    return;
+  }
+
+  clearUserSession(message.from.id);
 
   if (command === "/start" || command === "/menu") {
-    await showMenu(message.chat.id);
+    await showMainMenu(message.chat.id);
+    return;
+  }
+
+  if (command === "/help") {
+    await sendTextMessage(message.chat.id, buildHelpText());
     return;
   }
 
@@ -552,43 +1036,61 @@ async function handlePrivateCommand(message) {
     return;
   }
 
-  if (command === "/channels") {
-    await sendTextMessage(message.chat.id, buildChannelsText());
+  if (command === "/sources") {
+    await showSourcesScreen(message.chat.id);
+    return;
+  }
+
+  if (command === "/targets" || command === "/channels") {
+    await showTargetsScreen(message.chat.id);
     return;
   }
 
   if (command === "/routes") {
-    await sendTextMessage(message.chat.id, buildRoutesText());
-    return;
-  }
-
-  if (command === "/help") {
-    await sendTextMessage(message.chat.id, buildHelpText(), { parse_mode: "Markdown" });
+    const routes = store.listRoutes();
+    await sendTextMessage(
+      message.chat.id,
+      routes.length
+        ? routes.map((route) => buildRouteDetailsText(route)).join("\n\n")
+        : "Маршрутов пока нет."
+    );
     return;
   }
 
   if (command === "/source_add" || command === "/target_add") {
     const role = command === "/source_add" ? "source" : "target";
-    const { chatRef, alias } = parseChannelSetupArgs(rest);
+    const forwardedChannel = extractForwardedChannel(message);
+    const text = String(rest || "").trim();
 
-    if (chatRef || extractForwardedChannel(message)) {
-      await registerChannelFromPrivateMessage(message, role, alias, chatRef);
+    if (forwardedChannel && !text) {
+      await completeChannelSetupFlow(message, role, "");
       return;
     }
 
-    sessions.set(message.from.id, {
+    if (!text) {
+      await startChannelSetup(message.chat.id, message.from.id, role);
+      return;
+    }
+
+    const { chatRef, alias } = parseChannelSetupArgs(text);
+    if (chatRef) {
+      await completeChannelSetupFlow(message, role, alias, chatRef);
+      return;
+    }
+
+    if (forwardedChannel) {
+      await completeChannelSetupFlow(message, role, alias);
+      return;
+    }
+
+    setUserSession(message.from.id, {
       kind: "await_channel_registration",
       role,
       alias,
     });
     await sendTextMessage(
       message.chat.id,
-      [
-        `Ок, подключаем ${role}-канал с алиасом \`${normalizeAlias(alias)}\`.`,
-        "Теперь перешлите в этот чат любой пост из нужного канала.",
-        "Если канал публичный, можно следующим сообщением просто прислать его `@username`.",
-      ].join("\n"),
-      { parse_mode: "Markdown" }
+      `Теперь перешлите сюда любой пост из канала для алиаса ${normalizeAlias(alias)}.`
     );
     return;
   }
@@ -596,31 +1098,23 @@ async function handlePrivateCommand(message) {
   if (command === "/route_add") {
     const { sourceAlias, targetAlias } = parseRouteAliases(rest);
     const route = store.createRoute(sourceAlias, targetAlias);
-    await sendTextMessage(message.chat.id, buildRouteDetailsText(route));
+    await showRouteDetails(message.chat.id, route.id);
     return;
   }
 
   if (command === "/route_remove") {
     const { sourceAlias, targetAlias } = parseRouteAliases(rest);
-    const source = store.findChannelByAlias(sourceAlias);
-    const target = store.findChannelByAlias(targetAlias);
-    if (!source || !target) {
-      throw new Error("Не найден source или target канал по алиасу.");
-    }
-    store.removeRoute(store.buildRouteId(source.chatId, target.chatId));
-    await sendTextMessage(message.chat.id, `Маршрут удален: ${source.alias} -> ${target.alias}`);
+    const { routeId } = buildRouteFromAliases(sourceAlias, targetAlias);
+    store.removeRoute(routeId);
+    await sendTextMessage(message.chat.id, "Маршрут удален.");
     return;
   }
 
   if (command === "/route_clear") {
     const { sourceAlias, targetAlias } = parseRouteAliases(rest);
-    const source = store.findChannelByAlias(sourceAlias);
-    const target = store.findChannelByAlias(targetAlias);
-    if (!source || !target) {
-      throw new Error("Не найден source или target канал по алиасу.");
-    }
-    const route = store.clearRouteRewrites(store.buildRouteId(source.chatId, target.chatId));
-    await sendTextMessage(message.chat.id, buildRouteDetailsText(route));
+    const { routeId } = buildRouteFromAliases(sourceAlias, targetAlias);
+    const route = store.clearRouteRewrites(routeId);
+    await showRouteDetails(message.chat.id, route.id);
     return;
   }
 
@@ -635,20 +1129,14 @@ async function handlePrivateCommand(message) {
     }
 
     const [, sourceAlias, targetAlias, ruleRaw] = match;
-    const source = store.findChannelByAlias(sourceAlias);
-    const target = store.findChannelByAlias(targetAlias);
-    if (!source || !target) {
-      throw new Error("Не найден source или target канал по алиасу.");
-    }
-
+    const { routeId } = buildRouteFromAliases(sourceAlias, targetAlias);
     const rule = parseReplaceRule(ruleRaw);
-    const routeId = store.buildRouteId(source.chatId, target.chatId);
     const route =
       command === "/route_replace"
         ? store.setRouteReplacement(routeId, rule.findText, rule.replaceText)
         : store.setRouteTailReplacement(routeId, rule.findText, rule.replaceText);
 
-    await sendTextMessage(message.chat.id, buildRouteDetailsText(route));
+    await showRouteDetails(message.chat.id, route.id);
     return;
   }
 
@@ -663,13 +1151,7 @@ async function handlePrivateCommand(message) {
     }
 
     const [, sourceAlias, targetAlias, rawKeywords] = match;
-    const source = store.findChannelByAlias(sourceAlias);
-    const target = store.findChannelByAlias(targetAlias);
-    if (!source || !target) {
-      throw new Error("Не найден source или target канал по алиасу.");
-    }
-
-    const routeId = store.buildRouteId(source.chatId, target.chatId);
+    const { routeId } = buildRouteFromAliases(sourceAlias, targetAlias);
     const route = store.getRouteById(routeId);
     const nextRoute = store.setRouteFilters(routeId, {
       includeKeywords:
@@ -678,23 +1160,18 @@ async function handlePrivateCommand(message) {
         command === "/route_exclude" ? normalizeKeywords(rawKeywords) : route?.excludeKeywords || [],
     });
 
-    await sendTextMessage(message.chat.id, buildRouteDetailsText(nextRoute));
+    await showRouteDetails(message.chat.id, nextRoute.id);
     return;
   }
 
   if (command === "/route_filters_clear") {
     const { sourceAlias, targetAlias } = parseRouteAliases(rest);
-    const source = store.findChannelByAlias(sourceAlias);
-    const target = store.findChannelByAlias(targetAlias);
-    if (!source || !target) {
-      throw new Error("Не найден source или target канал по алиасу.");
-    }
-
-    const route = store.setRouteFilters(store.buildRouteId(source.chatId, target.chatId), {
+    const { routeId } = buildRouteFromAliases(sourceAlias, targetAlias);
+    const route = store.setRouteFilters(routeId, {
       includeKeywords: [],
       excludeKeywords: [],
     });
-    await sendTextMessage(message.chat.id, buildRouteDetailsText(route));
+    await showRouteDetails(message.chat.id, route.id);
     return;
   }
 
@@ -707,7 +1184,7 @@ async function handlePrivateCommand(message) {
     return;
   }
 
-  await sendTextMessage(message.chat.id, buildHelpText(), { parse_mode: "Markdown" });
+  await sendTextMessage(message.chat.id, buildHelpText());
 }
 
 async function handleChannelRegistration(message) {
@@ -728,7 +1205,11 @@ async function handleChannelRegistration(message) {
 
 function getFileIdForMessage(message) {
   if (Array.isArray(message.photo) && message.photo.length) {
-    return { method: "sendPhoto", field: "photo", fileId: message.photo[message.photo.length - 1].file_id };
+    return {
+      method: "sendPhoto",
+      field: "photo",
+      fileId: message.photo[message.photo.length - 1].file_id,
+    };
   }
   if (message.video?.file_id) {
     return { method: "sendVideo", field: "video", fileId: message.video.file_id };
@@ -765,9 +1246,11 @@ async function relaySingleMessage(message, route) {
       text: transformed.text,
       disable_web_page_preview: true,
     };
+
     if (!transformed.changed && Array.isArray(message.entities) && message.entities.length) {
       payload.entities = message.entities;
     }
+
     await telegramApi("sendMessage", payload);
     return;
   }
@@ -779,12 +1262,14 @@ async function relaySingleMessage(message, route) {
       chat_id: route.targetChatId,
       [media.field]: media.fileId,
     };
+
     if (transformed.text) {
       payload.caption = transformed.text;
     }
     if (!transformed.changed && Array.isArray(message.caption_entities) && message.caption_entities.length) {
       payload.caption_entities = message.caption_entities;
     }
+
     await telegramApi(media.method, payload);
     return;
   }
@@ -930,10 +1415,152 @@ async function handleCallbackQuery(callbackQuery) {
     from: callbackQuery.from,
   });
 
-  const [scope, screen] = String(callbackQuery.data || "").split(":");
+  clearUserSession(callbackQuery.from.id);
+
+  const [scope, action, arg1, arg2] = String(callbackQuery.data || "").split(":");
+
   if (scope === "menu") {
-    await renderMenuFromCallback(callbackQuery, screen);
+    await renderCallbackScreen(callbackQuery, action);
     await answerCallbackQuery(callbackQuery.id);
+    return;
+  }
+
+  if (scope === "setup") {
+    await answerCallbackQuery(callbackQuery.id);
+    await startChannelSetup(message.chat.id, callbackQuery.from.id, action === "source" ? "source" : "target");
+    return;
+  }
+
+  if (scope === "target" && action === "view") {
+    await renderCallbackScreen(callbackQuery, "target", { targetChatId: arg1 });
+    await answerCallbackQuery(callbackQuery.id);
+    return;
+  }
+
+  if (scope === "target" && action === "attach") {
+    await renderCallbackScreen(callbackQuery, "attach-source", { targetChatId: arg1 });
+    await answerCallbackQuery(callbackQuery.id);
+    return;
+  }
+
+  if (scope === "target" && action === "picksource") {
+    const route = store.createRouteByIds(arg2, arg1);
+    await renderCallbackScreen(callbackQuery, "route", { routeId: route.id });
+    await answerCallbackQuery(callbackQuery.id, "Маршрут создан");
+    return;
+  }
+
+  if (scope === "route" && action === "view") {
+    await renderCallbackScreen(callbackQuery, "route", { routeId: arg1 });
+    await answerCallbackQuery(callbackQuery.id);
+    return;
+  }
+
+  if (scope === "route" && action === "toggle") {
+    store.toggleRoute(arg1);
+    await renderCallbackScreen(callbackQuery, "route", { routeId: arg1 });
+    await answerCallbackQuery(callbackQuery.id, "Статус маршрута обновлен");
+    return;
+  }
+
+  if (scope === "route" && action === "replaymenu") {
+    await renderCallbackScreen(callbackQuery, "replay", { routeId: arg1 });
+    await answerCallbackQuery(callbackQuery.id);
+    return;
+  }
+
+  if (scope === "route" && action === "replay") {
+    await answerCallbackQuery(callbackQuery.id, "Запускаю выгрузку");
+    await replayRoutePosts(message.chat.id, arg1, Number(arg2));
+    await renderCallbackScreen(callbackQuery, "route", { routeId: arg1 });
+    return;
+  }
+
+  if (scope === "route" && action === "replace") {
+    setUserSession(callbackQuery.from.id, {
+      kind: "await_route_replace",
+      routeId: arg1,
+    });
+    await answerCallbackQuery(callbackQuery.id, "Жду правило замены");
+    await sendTextMessage(
+      message.chat.id,
+      [
+        "Пришлите правило в формате:",
+        "старый текст => новый текст",
+      ].join("\n")
+    );
+    return;
+  }
+
+  if (scope === "route" && action === "tail") {
+    const route = store.getRouteById(arg1);
+    setUserSession(callbackQuery.from.id, {
+      kind: "await_route_tail",
+      routeId: arg1,
+      tailMarker: route?.tailFindText || defaultTailMarker,
+    });
+    await answerCallbackQuery(callbackQuery.id, "Жду новый контактный блок");
+    await sendTextMessage(
+      message.chat.id,
+      [
+        "Пришлите новый контактный блок одним сообщением.",
+        `Бот заменит все, начиная с маркера: "${route?.tailFindText || defaultTailMarker}".`,
+      ].join("\n")
+    );
+    return;
+  }
+
+  if (scope === "route" && action === "include") {
+    setUserSession(callbackQuery.from.id, {
+      kind: "await_route_include",
+      routeId: arg1,
+    });
+    await answerCallbackQuery(callbackQuery.id, "Жду include-слова");
+    await sendTextMessage(
+      message.chat.id,
+      "Пришлите include-ключи через запятую. Пример: bmw,x5,m5"
+    );
+    return;
+  }
+
+  if (scope === "route" && action === "exclude") {
+    setUserSession(callbackQuery.from.id, {
+      kind: "await_route_exclude",
+      routeId: arg1,
+    });
+    await answerCallbackQuery(callbackQuery.id, "Жду exclude-слова");
+    await sendTextMessage(
+      message.chat.id,
+      "Пришлите exclude-ключи через запятую. Пример: audi,mercedes"
+    );
+    return;
+  }
+
+  if (scope === "route" && action === "clearfilters") {
+    store.setRouteFilters(arg1, {
+      includeKeywords: [],
+      excludeKeywords: [],
+    });
+    await renderCallbackScreen(callbackQuery, "route", { routeId: arg1 });
+    await answerCallbackQuery(callbackQuery.id, "Фильтры очищены");
+    return;
+  }
+
+  if (scope === "route" && action === "clearrewrite") {
+    store.clearRouteRewrites(arg1);
+    await renderCallbackScreen(callbackQuery, "route", { routeId: arg1 });
+    await answerCallbackQuery(callbackQuery.id, "Замены очищены");
+    return;
+  }
+
+  if (scope === "route" && action === "remove") {
+    const route = store.getRouteById(arg1);
+    const targetChatId = route?.targetChatId;
+    store.removeRoute(arg1);
+    if (targetChatId) {
+      await renderCallbackScreen(callbackQuery, "target", { targetChatId });
+    }
+    await answerCallbackQuery(callbackQuery.id, "Маршрут удален");
   }
 }
 
