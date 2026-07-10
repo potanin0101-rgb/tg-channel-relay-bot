@@ -11,7 +11,10 @@ server.listen(port, () => {
   console.log(`Health server listening on ${port}`);
 });
 
+console.log("Starting relay bot module...");
+
 import("./bot.mjs").catch((error) => {
+  console.log(`Failed to start relay bot: ${error?.stack || error?.message || error}`);
   console.error("Failed to start relay bot:", error);
   process.exitCode = 1;
 });
