@@ -180,6 +180,12 @@ export class ConfigStore {
     );
   }
 
+  listRoutesForTarget(targetChatId) {
+    return this.listRoutes().filter(
+      (route) => Number(route.targetChatId) === Number(targetChatId)
+    );
+  }
+
   getRouteById(routeId) {
     return this.state.routes[routeId] || null;
   }
@@ -246,6 +252,20 @@ export class ConfigStore {
     this.state.routes[routeId] = route;
     this.save();
     return route;
+  }
+
+  createRouteByIds(sourceChatId, targetChatId) {
+    const source = this.findChannelById(sourceChatId);
+    const target = this.findChannelById(targetChatId);
+
+    if (!source) {
+      throw new Error(`Не найден source-канал с id "${sourceChatId}".`);
+    }
+    if (!target) {
+      throw new Error(`Не найден target-канал с id "${targetChatId}".`);
+    }
+
+    return this.createRoute(source.alias, target.alias);
   }
 
   removeRoute(routeId) {
