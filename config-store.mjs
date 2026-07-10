@@ -7,6 +7,7 @@ const DEFAULT_STATE = {
   admins: [],
   channels: {},
   routes: {},
+  sourceHistory: {},
 };
 
 function deepClone(value) {
@@ -24,6 +25,10 @@ function mergeState(rawState = {}) {
     routes: {
       ...deepClone(DEFAULT_STATE.routes),
       ...(rawState.routes || {}),
+    },
+    sourceHistory: {
+      ...deepClone(DEFAULT_STATE.sourceHistory),
+      ...(rawState.sourceHistory || {}),
     },
     admins: Array.isArray(rawState.admins) ? [...rawState.admins] : [],
   };
@@ -179,6 +184,30 @@ export class ConfigStore {
     return this.state.routes[routeId] || null;
   }
 
+  appendSourcePost(sourceChatId, messages, limit = 100) {
+    const key = String(sourceChatId);
+    const nextLimit = Math.max(1, Number(limit) || 100);
+    const currentHistory = Array.isArray(this.state.sourceHistory[key])
+      ? this.state.sourceHistory[key]
+      : [];
+
+    const nextEntry = {
+      savedAt: new Date().toISOString(),
+      messages: JSON.parse(JSON.stringify(messages || [])),
+    };
+
+    this.state.sourceHistory[key] = [...currentHistory, nextEntry].slice(-nextLimit);
+    this.save();
+    return nextEntry;
+  }
+
+  getRecentSourcePosts(sourceChatId, count = 10) {
+    const key = String(sourceChatId);
+    const history = Array.isArray(this.state.sourceHistory[key]) ? this.state.sourceHistory[key] : [];
+    const nextCount = Math.max(1, Number(count) || 10);
+    return history.slice(-nextCount);
+  }
+
   createRoute(sourceAlias, targetAlias) {
     const source = this.findChannelByAlias(sourceAlias);
     const target = this.findChannelByAlias(targetAlias);
@@ -207,6 +236,8 @@ export class ConfigStore {
       active: true,
       findText: "",
       replaceText: "",
+      tailFindText: "",
+      tailReplaceText: "",
       includeKeywords: [],
       excludeKeywords: [],
       updatedAt: new Date().toISOString(),
@@ -243,6 +274,32 @@ export class ConfigStore {
     }
     route.findText = String(findText || "");
     route.replaceText = String(replaceText || "");
+    route.updatedAt = new Date().toISOString();
+    this.save();
+    return route;
+  }
+
+  setRouteTailReplacement(routeId, findText, replaceText) {
+    const route = this.getRouteById(routeId);
+    if (!route) {
+      throw new Error("Маршрут не найден.");
+    }
+    route.tailFindText = String(findText || "");
+    route.tailReplaceText = String(replaceText || "");
+    route.updatedAt = new Date().toISOString();
+    this.save();
+    return route;
+  }
+
+  clearRouteRewrites(routeId) {
+    const route = this.getRouteById(routeId);
+    if (!route) {
+      throw new Error("Маршрут не найден.");
+    }
+    route.findText = "";
+    route.replaceText = "";
+    route.tailFindText = "";
+    route.tailReplaceText = "";
     route.updatedAt = new Date().toISOString();
     this.save();
     return route;
